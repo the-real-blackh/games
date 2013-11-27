@@ -9,7 +9,8 @@ main = do
     args <- getArgs
     case args of
         [fn] -> do
+            res <- loadElementResources
             engine' (GLUTArgs "Level editor" "resources") $
-                editor (undefined :: Element) fn
+                editor res fn
         _ -> fail $ "Usage: level-editor-glut <level>.hs"
 
