@@ -1,4 +1,4 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ScopedTypeVariables, RecursiveDo #-}
 module Editor where
 
 import Level
@@ -33,6 +33,7 @@ editor renderElt fn gi run = do
             (go, eSaveLevel) <- sync $ editIt renderElt (level0 :: Level e) gi
             kill <- sync $ listen eSaveLevel $ \level -> do
                 let text = C.pack (show level)
+                putStrLn $ "saving to "++fn
                 C.writeFile fn text
             run go
             kill
@@ -47,7 +48,12 @@ editIt :: Platform p =>
               Event (Level e)
           )
 editIt renderElt level0 GameInput { giAspect = aspect, giMouse = eMouse } = do
-    let terrainSpr = pure $ drawTerrain renderElt (0,0) (leTerrain level0)
-    eClick <- clickGesture eMouse
+    rec
+        (dragVec, dropVec) <- dragGesture everywhere eMouse
+        posReal <- accum (0,0) $ plus <$> dropVec
+        let pos = liftA3 maybe posReal (plus <$> posReal) dragVec
+    let terrainSpr = fmap (\pos -> drawTerrain renderElt pos (leTerrain level0)) pos
+    eClick <- clickGesture everywhere eMouse
     return (def { goSprite = terrainSpr }, fmap (const level0) eClick )
-
+  where
+    everywhere = pure (const True)
