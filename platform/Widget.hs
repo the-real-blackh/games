@@ -75,7 +75,7 @@ flow fl wi = wi {
                     (childForceds, childDesiredsXY, wrects) = unzip3 pls :: ([Bool], [Vector], [[Rect]])
                     childDesireds = map whichAxis childDesiredsXY :: [Coord]
                     -- How many widgets sizes are parent-determined?
-                    nParentDet = length (filter id childForceds)
+                    nParentDet = length (filter not childForceds)
                     -- Total of child-determined sizes
                     childForcedTotal = sum' childDesireds
                     -- Note: Not evaluated if n == 0, so no /0 error.
