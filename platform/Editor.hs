@@ -49,8 +49,8 @@ editIt :: Platform p =>
           )
 editIt renderElt level0 GameInput { giAspect = aspect, giMouse = eMouse } = do
     rec
-        (dragVec, dropVec) <- dragGesture everywhere eMouse
-        posReal <- accum (0,0) $ plus <$> dropVec
+        (dragVec, eDropVec) <- dragGesture everywhere eMouse
+        posReal <- accum (0,0) $ plus <$> eDropVec
         let pos = liftA3 maybe posReal (plus <$> posReal) dragVec
     let terrainSpr = fmap (\pos -> drawTerrain renderElt pos (leTerrain level0)) pos
     eClick <- clickGesture everywhere eMouse
