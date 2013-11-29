@@ -4,10 +4,10 @@ module SimpleElement where
 import FRP.Sodium.GameEngine2D.Platform
 
 data Element = Platform PType | Spike | Coin
-    deriving (Read, Show)
+    deriving (Read, Show, Eq, Ord)
 
 data PType = PLeft | PMiddle | PRight
-    deriving (Read, Show)
+    deriving (Read, Show, Eq, Ord)
 
 instance Enum Element where
     toEnum 0 = Coin

@@ -15,8 +15,8 @@ data Level e = Level {
     }
     deriving (Read, Show)
 
-instance Default (Level e) where
-    def = Level (IM.empty)
+instance Enum e => Default (Level e) where
+    def = Level $ IM.fromList [(0, [(0, toEnum 0)])]
 
 -- | The size of a single terrain unit in Sodium2D co-ordinate space.
 levelScale :: Coord

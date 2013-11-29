@@ -5,6 +5,7 @@ module Widget (
         AxisPlacement,
         Widget(..),
         widget,
+        widget',
         flow,
         Flow(..),
         reify,
@@ -21,11 +22,13 @@ module Widget (
 import FRP.Sodium
 import FRP.Sodium.GameEngine2D.Geometry
 import Control.Applicative
+import Control.Arrow (second)
 import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Traversable (sequenceA)
 import Lens.Family
+import Lens.Family.Stock
 import Debug.Trace
 
 
@@ -59,7 +62,7 @@ widget' :: Placement
         -> Widget i o a
 widget' placement f = Widget [placement] $ \rects i -> do
     let rect = fromMaybe (error $ "Widget.widget rects truncated!") . listToMaybe <$> rects
-        rects' = tail <$> rects
+        rects' = drop 1 <$> rects
     (a, o, sz) <- f (fst <$> rect) (snd <$> rect) i
     return (a, o, [sz], rects')
 
@@ -114,6 +117,10 @@ flow fl wi = Widget {
                     whichAxis = case fl of
                                 Horizontal -> fst
                                 Vertical   -> snd
+                    otherAxis :: Functor f => LensLike' f (Coord, Coord) Coord
+                    otherAxis = case fl of
+                                Horizontal -> _2
+                                Vertical   -> _1
                     pLength = case fl of
                                 Horizontal -> rectWidth p
                                 Vertical   -> rectHeight p
@@ -123,14 +130,20 @@ flow fl wi = Widget {
                             forced  = whichAxis childForced
                             desired = whichAxis childDesired
                             toChop = if forced then desired else desired+paddingAllocation
-                            (prect, p') = split toChop p
+                            (prect0, p') = split toChop p
+                            prect = prect0 & (_2 . otherAxis) %~ max halfMinOtherAxis
                         in  ((forced, childDesired, prect, wrect), szs'):place szs' placements' p'
                     pls_szs = place szs placements p
                     (pls, szs's) = unzip pls_szs
                     szs' = last szs's
                     (childForceds, childDesiredsXY, prects, wrectss) = unzip4 pls
-                    wrects = concat wrectss
                     childDesireds = map whichAxis childDesiredsXY
+                    minOtherAxis = maximum0' (map (^. otherAxis) childDesiredsXY)
+                    halfMinOtherAxis = minOtherAxis * 0.5
+                    -- Having laid out along the flow axis, then we make the prects all the same
+                    -- in the other axis.
+                    --prects = map ((_2 . otherAxis) %~ max halfMinOtherAxis) prects0 
+                    wrects = concat wrectss
                     -- How many widgets sizes are parent-determined?
                     nParentDet = length (filter not childForceds)
                     -- Total of child-determined sizes
@@ -150,7 +163,7 @@ flow fl wi = Widget {
         -- Throw out the first item, which is the combined rectangles.
         -- These can be useful for functions that override this functionality,
         -- such as 'backdrop'.
-        wiReify wi (tail <$> rects) i
+        wiReify wi (drop 1 <$> rects) i
   }
   where
     sum' = foldl' (+) 0
@@ -231,13 +244,12 @@ placement f (Widget [p] r) = fmap (\p' -> Widget [p'] r) (f p)
 placement _ _ = error "Widget.placement can't use on null widget or combined widgets"
 
 -- | Pad with the specified size horizontally and vertically
-pad :: String -> (Coord, Coord) -> Placement -> Placement
-pad descr (w, h) (Placement f) = Placement $ \p szs ->
+pad :: (Coord, Coord) -> Placement -> Placement
+pad (w, h) (Placement f) = Placement $ \p szs ->
     let (childForced, childDesired, wrect, szs') = f p szs
-        {-(szw, szh):szs'
-        szw' = szw + w
-        szh' = szh + h -}
-    in  trace("szs'="++show szs'++" "++descr) $ (childForced, childDesired, wrect, {- (seq szw' szw', seq szh' szh'): -} szs') 
+    in  (childForced, desiredUp childDesired, wrect, szs') 
+  where
+    desiredUp (vx,vy) = (vx+w*2, vy+h*2)
 
 {- TESTS -}
 
