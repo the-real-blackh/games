@@ -1,6 +1,21 @@
 {-# LANGUAGE RecursiveDo #-}
 -- | Widget and layout
-module Widget where
+module Widget (
+        Placement,
+        AxisPlacement,
+        Widget(..),
+        widget,
+        flow,
+        Flow(..),
+        reify,
+        atStart,
+        atCentre,
+        atEnd,
+        fill,
+        expandable,
+        (##),
+        placement
+    ) where
 
 import FRP.Sodium
 import FRP.Sodium.GameEngine2D.Geometry
@@ -9,18 +24,32 @@ import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Traversable (sequenceA)
+import Lens.Family
+import Debug.Trace
 
 
 -- | Parent's desired rectangle -> child desired sizes ->
---     ((child-forced width, child-forced height), aggregate child desired size, widget rect, unused child desired sizes)
+--     ((child-forced width, child-forced height),
+--       aggregate child desired size,
+--       sub-widget rects,
+--       unused child desired sizes)
 newtype Placement = Placement (Rect -> [Vector] ->
     ((Bool, Bool), Vector, [Rect], [Vector]))
+
+widget :: Placement
+       -> (Behavior Rect -> i -> Reactive (a, o, Behavior Vector))
+       -> Widget i o a
+widget placement f = Widget [placement] $ \rects i -> do
+    let rect = fromMaybe (error $ "Widget.widget rects truncated!") . listToMaybe <$> rects
+        rects' = tail <$> rects
+    (a, o, sz) <- f rect i
+    return (a, o, [sz], rects')
 
 data Widget i o a = Widget {
         wiPlacement :: [Placement],  -- ^ Widget's desired size to actual rectangle
         -- | Desired size must not depend on input rect
         wiReify ::
-               Behavior [Rect]
+               Behavior [Rect]     -- List of layout rectangles (one per subwidget)
             -> i
                -- Output value, sprite, sound, desired size
             -> Reactive (a, o, [Behavior Vector], Behavior [Rect]) 
@@ -38,9 +67,22 @@ instance Monoid o => Applicative (Widget i o) where
     wf <*> wa = Widget {
             wiPlacement = wiPlacement wf <> wiPlacement wa,
             wiReify = \rects i -> do
-                (f, oA, szF, rects')  <- wiReify wf rects  i
-                (a, oB, szA, rects'') <- wiReify wa rects' i
-                return (f a, oA <> oB, szF <> szA, rects'') 
+                (f, oF, szF, rects')  <- wiReify wf rects  i
+                (a, oA, szA, rects'') <- wiReify wa rects' i
+                return (f a, oF <> oA, szF <> szA, rects'') 
+        }
+
+instance (Monoid a, Monoid o) => Monoid (Widget i o a) where
+    mempty = Widget {
+            wiPlacement = [],
+            wiReify = \rects _ -> return (mempty, mempty, [], rects)
+        }
+    wa `mappend` wb = Widget {
+            wiPlacement = wiPlacement wa <> wiPlacement wb,
+            wiReify = \rects i -> do
+                (a, oA, szA, rects')  <- wiReify wa rects  i
+                (b, oB, szB, rects'') <- wiReify wb rects' i
+                return (a <> b, oA <> oB, szA <> szB, rects'')
         }
 
 data Flow = Horizontal | Vertical
@@ -72,8 +114,8 @@ flow fl wi = wi {
                     pls_szs = place szs placements p
                     (pls, szs's) = unzip pls_szs
                     szs' = last szs's
-                    (childForceds, childDesiredsXY, wrects) = unzip3 pls :: ([Bool], [Vector], [[Rect]])
-                    childDesireds = map whichAxis childDesiredsXY :: [Coord]
+                    (childForceds, childDesiredsXY, wrects) = unzip3 pls
+                    childDesireds = map whichAxis childDesiredsXY
                     -- How many widgets sizes are parent-determined?
                     nParentDet = length (filter not childForceds)
                     -- Total of child-determined sizes
@@ -113,11 +155,6 @@ reify rect eMouse wi = do
 newtype AxisPlacement = AxisPlacement ((Coord, Coord) -> Coord -> (Bool, (Coord, Coord)))
 
 -- | In centre of parent's space
-nullz :: AxisPlacement
-nullz = AxisPlacement $ \(po, pv) sz0 ->
-    (True, (10,10))
-
--- | In centre of parent's space
 atCentre :: AxisPlacement
 atCentre = AxisPlacement $ \(po, pv) sz0 ->
     let sz = sz0*0.5
@@ -149,22 +186,6 @@ fill = AxisPlacement $ \(po, pv) sz0 ->
 expandable :: AxisPlacement -> AxisPlacement
 expandable (AxisPlacement f) = AxisPlacement $ \p cv -> (False, snd $ f p cv)
 
-{-
-expandX :: Widget i o a -> Widget i o a
-expandX wi = wi {
-        wiPlacement = flip map (wiPlacement wi) $ \(Placement f) -> Placement $
-            \rect szs -> let ((_, forcedY), desired, wrect, szs') = f rect szs
-                         in  ((True, forcedY), desired, wrect, szs') 
-    }
-
-expandY :: Widget i o a -> Widget i o a
-expandY wi = wi {
-        wiPlacement = flip map (wiPlacement wi) $ \(Placement f) -> Placement $
-            \rect szs -> let ((forcedX, _), desired, wrect, szs') = f rect szs
-                         in  ((forcedX, True), desired, wrect, szs') 
-    }
-    -}
-
 infixr 9 ##
 
 -- | Combine X and Y placement into a 2D placement
@@ -182,28 +203,33 @@ AxisPlacement plx ## AxisPlacement ply = Placement $ \((pox, poy), (pvx, pvy)) (
             cvs
         )
 
-{-
+-- | Lens for placement
+placement :: Functor f => (Placement -> f Placement) -> Widget i o a -> f (Widget i o a)
+placement f (Widget [p] r) = fmap (\p' -> Widget [p'] r) (f p)
+placement _ _ = error "Widget.placement can't use on null widget or combined widgets"
+
 newtype Output = Output (Behavior [Rect])
 instance Monoid Output where
     mempty = Output $ pure []
     mappend (Output a) (Output b) = Output $ liftA2 (++) a b
 
 block :: Vector -> Widget () Output ()
-block sz = Widget [fill ## fill] $ \rects () -> do
-    let rect = head <$> rects
-        rects' = tail <$> rects
-    return ((), Output $ (:[]) <$> rect, [pure sz], rects')
+block sz = widget (fill ## fill) $ \rect () -> do
+    return ((), Output $ (:[]) <$> rect, pure sz)
 
 main :: IO ()
 main = do
-    let wi = flow Vertical $
-               (block (40, 20)) { wiPlacement = [atEnd ## fill] }
-            <* (block (40, 30)) { wiPlacement = [fill ## expandable atEnd] }
+    let {-wi = flow Vertical $
+               (block (40, 20) & placement .~ atEnd ## fill)
+            <* (block (40, 30) & placement .~ fill ## expandable atEnd) -}
+        wi = flow Vertical $ mconcat $ replicate 5 (
+               block (10, 10)
+            )
     (rect, sendRect) <- sync $ newBehavior $ edgesRect (0,20,50,100)
     ((), Output rects) <- sync $ reify rect () wi
     kill <- sync $ listen (value rects) $ \rects -> print $ map rectEdges rects
     sync $ sendRect $ edgesRect (0,0,50,100)
     sync $ sendRect $ edgesRect (0,90,50,100)
+    sync $ sendRect $ edgesRect (10,90,20,100)
     kill
--}
 

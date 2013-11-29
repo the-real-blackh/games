@@ -32,7 +32,7 @@ loadElementResources = do
     coin <- image "coin.png"
     platformLeft <- image "platform-left.png"
     platformMiddle <- image "platform-middle.png"
-    platformRight <- image "platfomr-right.png"
+    platformRight <- image "platform-right.png"
     spike <- image "spike.png"
     return $ \e -> case e of
         Coin -> coin
