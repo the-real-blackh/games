@@ -172,7 +172,7 @@ flow fl wi = Widget {
 reify :: Behavior Rect               -- ^ Desired rect
       -> i
       -> Widget i o a
-      -> Reactive (a, o)
+      -> Reactive (a, o, Behavior Rect)
 reify rect eMouse wi = do
     rec
         let place bszs (Placement f) =
@@ -182,8 +182,11 @@ reify rect eMouse wi = do
                         fmap (\(_, _, rects, _) -> rects) bOut
                     )
             (_, rects) = mapAccumL place (sequenceA szs) (wiPlacement wi)
+            rects' = concat <$> sequenceA rects
         (out, o, szs, _) <- wiReify wi (concat <$> sequenceA rects) eMouse
-    return (out, o)
+    -- boundingRect needs work: It won't work on a plain mappend of elements
+    let boundingRect = fromMaybe ((0,0),(0,0)) . listToMaybe . map fst <$> rects'
+    return (out, o, boundingRect)
 
 -- | Parent's desired (origin, size) -> Widget desired size ->
 --     (child forced size, final widget (origin, size))  
@@ -271,7 +274,7 @@ main = do
                block (10, 10)
             )
     (rect, sendRect) <- sync $ newBehavior $ edgesRect (0,20,50,100)
-    ((), Output rects) <- sync $ reify rect () wi
+    ((), Output rects, _) <- sync $ reify rect () wi
     kill <- sync $ listen (value rects) $ \rects -> print $ map rectEdges rects
     sync $ sendRect $ edgesRect (0,0,50,100)
     sync $ sendRect $ edgesRect (0,90,50,100)
