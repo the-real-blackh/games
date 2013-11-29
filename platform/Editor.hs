@@ -47,24 +47,24 @@ editor renderElt fn gi run = do
             kill
         _ -> fail $ "bad data format in " <> fn
 
-elementSelector :: Platform p =>
+elementSelector :: (Show e, Platform p) =>
                    (e -> Drawable p)
                 -> Resources p
                 -> e
                 -> UIWidget p (Event e)
-elementSelector render res elt = widget (atCentre ## atCentre) $ \rect eMouse -> do
+elementSelector render res elt = widget (pad (show elt) (20,20) $ atCentre ## atCentre) $ \rect eMouse -> do
     eClick <- clickGesture (flip inside <$> rect) eMouse
     return $ (const elt <$> eClick, UIOutput (render elt <$> rect) never, pure (levelScale, levelScale))
 
-elementBar :: forall p e . (Platform p, Bounded e, Enum e) =>
+elementBar :: forall p e . (Platform p, Show e, Bounded e, Enum e) =>
               (e -> Drawable p)
            -> Resources p
            -> UIWidget p (Event e)
 elementBar render res =
     let widgets = map (elementSelector render res) [minBound..maxBound]
-    in  {- backdrop (rsConcrete res) $ -} flow Vertical $ mconcat widgets
+    in  backdrop (rsConcrete res) $ flow Vertical $ mconcat widgets
 
-editIt :: (Platform p, Enum e, Bounded e) =>
+editIt :: (Platform p, Show e, Enum e, Bounded e) =>
           (e -> Drawable p)
        -> Resources p
        -> Level e

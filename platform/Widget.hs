@@ -14,7 +14,8 @@ module Widget (
         fill,
         expandable,
         (##),
-        placement
+        placement,
+        pad
     ) where
 
 import FRP.Sodium
@@ -29,31 +30,44 @@ import Debug.Trace
 
 
 -- | Parent's desired rectangle -> child desired sizes ->
---     ((child-forced width, child-forced height),
+--     (
+--       (child-forced width, child-forced height),
 --       aggregate child desired size,
---       sub-widget rects,
---       unused child desired sizes)
+--       (
+--           sub-widget parent/bounding/outer rects,
+--           sub-widget widget rects
+--       ),
+--       unused child desired sizes
+--     )
 newtype Placement = Placement (Rect -> [Vector] ->
-    ((Bool, Bool), Vector, [Rect], [Vector]))
-
-widget :: Placement
-       -> (Behavior Rect -> i -> Reactive (a, o, Behavior Vector))
-       -> Widget i o a
-widget placement f = Widget [placement] $ \rects i -> do
-    let rect = fromMaybe (error $ "Widget.widget rects truncated!") . listToMaybe <$> rects
-        rects' = tail <$> rects
-    (a, o, sz) <- f rect i
-    return (a, o, [sz], rects')
+    ((Bool, Bool), Vector, [(Rect, Rect)], [Vector]))
 
 data Widget i o a = Widget {
         wiPlacement :: [Placement],  -- ^ Widget's desired size to actual rectangle
         -- | Desired size must not depend on input rect
         wiReify ::
-               Behavior [Rect]     -- List of layout rectangles (one per subwidget)
+               Behavior [(Rect, Rect)]  -- ^ List of (parent/outer/bounding, widget_ rectangles -
+                                        -- reify must peel off what it needs to use
             -> i
-               -- Output value, sprite, sound, desired size
-            -> Reactive (a, o, [Behavior Vector], Behavior [Rect]) 
+               -- Output value, sprite, sound, desired size, parent rect remainder, widget rect remainder
+            -> Reactive (a, o, [Behavior Vector], Behavior [(Rect,Rect)])
     }
+
+-- | Widget receives the parent/outer/bounding rect and then the widget rect.
+widget' :: Placement
+        -> (Behavior Rect -> Behavior Rect -> i -> Reactive (a, o, Behavior Vector))
+        -> Widget i o a
+widget' placement f = Widget [placement] $ \rects i -> do
+    let rect = fromMaybe (error $ "Widget.widget rects truncated!") . listToMaybe <$> rects
+        rects' = tail <$> rects
+    (a, o, sz) <- f (fst <$> rect) (snd <$> rect) i
+    return (a, o, [sz], rects')
+
+-- | Simple widget that just receives the widget rect.
+widget :: Placement
+       -> (Behavior Rect -> i -> Reactive (a, o, Behavior Vector))
+       -> Widget i o a
+widget placement f = widget' placement $ \_ rect i -> f rect i
 
 instance Functor (Widget i o) where
     fmap f (Widget p r) = Widget p (\placement i -> fmap f' (r placement i))
@@ -88,7 +102,7 @@ instance (Monoid a, Monoid o) => Monoid (Widget i o a) where
 data Flow = Horizontal | Vertical
 
 flow :: Flow -> Widget i o a -> Widget i o a
-flow fl wi = wi {
+flow fl wi = Widget {
     wiPlacement = [Placement $ \p szs ->
         case wiPlacement wi of
             [] -> ((False, False),(0,0),[],szs)
@@ -105,16 +119,17 @@ flow fl wi = wi {
                                 Vertical   -> rectHeight p
                     place szs [] _ = []
                     place szs ((Placement f):placements') p =
-                        let (childForced, childDesired, wrect, szs') = f rect szs
+                        let (childForced, childDesired, wrect, szs') = f prect szs
                             forced  = whichAxis childForced
                             desired = whichAxis childDesired
-                            sz = if forced then desired else desired+paddingAllocation
-                            (rect, p') = split sz p
-                        in  ((forced, childDesired, wrect), szs'):place szs' placements' p'
+                            toChop = if forced then desired else desired+paddingAllocation
+                            (prect, p') = split toChop p
+                        in  ((forced, childDesired, prect, wrect), szs'):place szs' placements' p'
                     pls_szs = place szs placements p
                     (pls, szs's) = unzip pls_szs
                     szs' = last szs's
-                    (childForceds, childDesiredsXY, wrects) = unzip3 pls
+                    (childForceds, childDesiredsXY, prects, wrectss) = unzip4 pls
+                    wrects = concat wrectss
                     childDesireds = map whichAxis childDesiredsXY
                     -- How many widgets sizes are parent-determined?
                     nParentDet = length (filter not childForceds)
@@ -127,12 +142,19 @@ flow fl wi = wi {
                         in  case fl of
                                 Horizontal -> (sum' xs, maximum0' ys)
                                 Vertical   -> (maximum0' xs, sum' ys)
-                in  ((True, True), aggregateDesiredSz, concat wrects, szs')
-    ]
+                    boundingWRect = foldl1' appendRect (map snd wrects)
+                    boundingPRect = foldl1' appendRect (boundingWRect:prects) 
+                in  ((True, True), aggregateDesiredSz, (boundingPRect, boundingWRect) : wrects, szs')
+    ],
+    wiReify = \rects i -> do
+        -- Throw out the first item, which is the combined rectangles.
+        -- These can be useful for functions that override this functionality,
+        -- such as 'backdrop'.
+        wiReify wi (tail <$> rects) i
   }
- where
-  sum' = foldl' (+) 0
-  maximum0' = foldl' max 0
+  where
+    sum' = foldl' (+) 0
+    maximum0' = foldl' max 0
 
 reify :: Behavior Rect               -- ^ Desired rect
       -> i
@@ -192,14 +214,14 @@ infixr 9 ##
 (##) :: AxisPlacement  -- ^ Horizontal placement
      -> AxisPlacement  -- ^ Vertical placement
      -> Placement
-AxisPlacement plx ## AxisPlacement ply = Placement $ \((pox, poy), (pvx, pvy)) ((cvx, cvy):cvs) ->
+AxisPlacement plx ## AxisPlacement ply = Placement $ \p@((pox, poy), (pvx, pvy)) ((cvx, cvy):cvs) ->
     -- We negate the Ys because X is increasing (left to right) but Y is decreasing (top to bottom).
     let (whichAxisx, (wox, wvx)) = plx (pox, pvx) cvx
         (whichAxisy, (woy, wvy)) = ply (-poy, pvy) cvy
     in  (
             (whichAxisx,whichAxisy),
             (cvx, cvy),
-            [((wox,-woy),(wvx,wvy))],
+            [(p, ((wox,-woy),(wvx,wvy)))],
             cvs
         )
 
@@ -207,6 +229,17 @@ AxisPlacement plx ## AxisPlacement ply = Placement $ \((pox, poy), (pvx, pvy)) (
 placement :: Functor f => (Placement -> f Placement) -> Widget i o a -> f (Widget i o a)
 placement f (Widget [p] r) = fmap (\p' -> Widget [p'] r) (f p)
 placement _ _ = error "Widget.placement can't use on null widget or combined widgets"
+
+-- | Pad with the specified size horizontally and vertically
+pad :: String -> (Coord, Coord) -> Placement -> Placement
+pad descr (w, h) (Placement f) = Placement $ \p szs ->
+    let (childForced, childDesired, wrect, szs') = f p szs
+        {-(szw, szh):szs'
+        szw' = szw + w
+        szh' = szh + h -}
+    in  trace("szs'="++show szs'++" "++descr) $ (childForced, childDesired, wrect, {- (seq szw' szw', seq szh' szh'): -} szs') 
+
+{- TESTS -}
 
 newtype Output = Output (Behavior [Rect])
 instance Monoid Output where
