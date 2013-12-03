@@ -5,4 +5,4 @@ import FRP.Sodium.GameEngine2D.Platform (engine)
 
 main = do
     game <- pookieBathtime
-    engine (GLUTArgs "freecell" "resources") game
+    engine (GLUTArgs "Pookie Bathtime" "resources") game

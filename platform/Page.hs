@@ -11,10 +11,10 @@ data Page p = Page {
 
 pager :: Platform p =>
          Page p -> GameInput p -> Reactive (GameOutput p)
-pager page0 gi = do
-    po0 <- pgReactive page0 gi
+pager pg0 gi = do
+    po0 <- pgReactive pg0 gi
     rec
-        po <- hold po0 . execute . fmap (\p -> pgReactive p gi) $ ePage
+        po <- hold po0 . execute . fmap (\pg -> pgReactive pg gi) $ ePage
         let ePage = switchE (snd <$> po)
     let go = fst <$> po
     GameOutput <$> switch (goSprite <$> go)

@@ -60,7 +60,7 @@ elementSelector :: (Eq e, Platform p) =>
                 -> e
                 -> UIWidget p (Event e)
 elementSelector render res active e = widget' panelPlacement $ \prect rect eMouse -> do
-    eClick <- clickGesture (flip inside <$> rect) eMouse
+    (eClick, _) <- clickGesture (flip inside <$> rect) eMouse
     let eltSpr = render e <$> rect
         highlightSpr = liftA2 (\active rect -> if active == Just e then rsRed res rect else mempty)
             active prect
@@ -70,7 +70,7 @@ button :: Platform p =>
           Drawable p
        -> UIWidget p (Event ())
 button draw = widget panelPlacement $ \rect eMouse -> do
-    eClick <- clickGesture (flip inside <$> rect) eMouse
+    (eClick, _) <- clickGesture (flip inside <$> rect) eMouse
     return (const () <$> eClick, UIOutput (draw <$> rect) never, pure (levelScale, levelScale))
 
 elementBar :: forall p e . (Platform p, Eq e, Bounded e, Enum e) =>
@@ -104,7 +104,7 @@ editIt renderElt res level0 GameInput { giAspect = aspect, giMouse = eMouse, giT
             eMouse (elementBar renderElt res elementSel)
     let notInPanel = (\r pt -> not $ inside pt r) <$> panelRect
     (eDel0, eMouse') <- doubleClickGesture notInPanel eMouse time
-    eAdd0 <- clickGesture notInPanel eMouse'
+    (eAdd0, _) <- clickGesture notInPanel eMouse'
     let eAdd = snapshotWith (\pt (pos, me) ->
                 case me of
                     Just e -> insertLevel (findElementClick pos pt) e
