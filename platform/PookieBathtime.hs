@@ -26,7 +26,7 @@ pookieBathtime = game <$> loadResources <*> newStdGen
 
 loadResources :: Platform p => IO (Resources p)
 loadResources = Resources
-    <$> backgroundImage "pookie-title.png"
+    <$> backgroundImage "pookie-title.jpg"
     <*> image "play-button.png"
     <*> backgroundImage "woman-with-dog.jpg"
 
