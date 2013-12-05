@@ -6,7 +6,10 @@ import UIWidget
 
 import Control.Applicative
 import Control.Exception
+import Control.Monad
+import Data.Char
 import Data.Default
+import Data.List
 import Data.Monoid
 import Data.Traversable (sequenceA)
 import FRP.Sodium.GameEngine2D.Geometry
@@ -16,11 +19,13 @@ import FRP.Sodium
 import FRP.Sodium.IO
 import qualified Data.ByteString.Char8 as C
 import qualified System.IO.Cautious as Cautious
+import System.FilePath
 import System.IO.Error
 import Debug.Trace
 
 
 data Resources p = Resources {
+        rsBackground :: Sprite p,
         rsConcrete :: Drawable p,
         rsRed      :: Drawable p,
         rsSave     :: Drawable p
@@ -33,23 +38,35 @@ editor :: forall p e . (Platform p, Eq e, Read e, Show e, Bounded e, Enum e) =>
        -> (GameOutput p -> IO ())
        -> IO ()
 editor renderElt fn gi run = do
-    rLevel0 <- (reads . C.unpack <$> C.readFile fn)
+    rLevel0 <- do
+        txt0 <- C.unpack <$> C.readFile fn
+        unless (heading `isPrefixOf` txt0) $ fail $ "bad heading format in " <> fn
+        let txt = reverse . dropWhile isSpace . reverse $ drop (length heading) txt0
+        return $ reads txt
       `catch` \e -> do
         if isDoesNotExistError e
             then return [(def, "")]
             else throwIO e
     case rLevel0 of
         [(level0, "")] -> do
-            res <- Resources <$> image "concrete.png"
+            res <- Resources <$> backgroundImage "background.jpg"
+                             <*> image "concrete.png"
                              <*> image "red.png"
                              <*> image "save.png"
             (go, eSaveLevel) <- sync $ editIt renderElt res (level0 :: Level e) gi
             kill <- sync $ listen eSaveLevel $ \level -> do
                 putStrLn $ "saving to "++fn
-                Cautious.writeFile fn (show level)
+                Cautious.writeFile fn (heading <> show level)
             run go
             kill
-        _ -> fail $ "bad data format in " <> fn
+        _ -> fail $ "bad data format in " <> fn 
+  where
+    moduleName = dropExtension . takeFileName $ fn
+    heading = "module " <> moduleName <> " where\n\n" <>
+              "import Level\n" <>
+              "import SimpleElement\n" <>
+              "import Data.IntMap (fromList)\n\n" <>
+              "level = "
 
 panelPlacement = pad (10, 10) $ atCentre ## atCentre
 
@@ -119,6 +136,7 @@ editIt renderElt res level0 GameInput { giAspect = aspect, giMouse = eMouse, giT
     return (
         def {
             goSprite = mconcat <$> sequenceA [
+                pure (rsBackground res),
                 terrainSpr,
                 barSpr
               ],
