@@ -70,6 +70,9 @@ editor renderElt fn gi run = do
 
 panelPlacement = pad (10, 10) $ atCentre ## atCentre
 
+elementBarItemSize :: Vector
+elementBarItemSize = (100,100)
+
 elementSelector :: (Eq e, Platform p) =>
                    (e -> Drawable p)
                 -> Resources p
@@ -81,14 +84,18 @@ elementSelector render res active e = widget' panelPlacement $ \prect rect eMous
     let eltSpr = render e <$> rect
         highlightSpr = liftA2 (\active rect -> if active == Just e then rsRed res rect else mempty)
             active prect
-    return (const e <$> eClick, UIOutput (liftA2 mappend highlightSpr eltSpr) never, pure (levelScale, levelScale))
+    return (const e <$> eClick, UIOutput (liftA2 mappend highlightSpr eltSpr) never, pure elementBarItemSize)
 
 button :: Platform p =>
-          Drawable p
+          Resources p
+       -> Drawable p
        -> UIWidget p (Event ())
-button draw = widget panelPlacement $ \rect eMouse -> do
-    (eClick, _) <- clickGesture (flip inside <$> rect) eMouse
-    return (const () <$> eClick, UIOutput (draw <$> rect) never, pure (levelScale, levelScale))
+button res draw = widget panelPlacement $ \rect eMouse -> do
+    (eClick, down) <- clickGesture (flip inside <$> rect) eMouse
+    let spr = liftA2 (\down rect ->
+                (if down then rsRed res rect else mempty) <> draw rect
+            ) down rect
+    return (const () <$> eClick, UIOutput spr never, pure elementBarItemSize)
 
 elementBar :: forall p e . (Platform p, Eq e, Bounded e, Enum e) =>
               (e -> Drawable p)
@@ -97,7 +104,7 @@ elementBar :: forall p e . (Platform p, Eq e, Bounded e, Enum e) =>
            -> UIWidget p (Event (), Event e)
 elementBar render res active =
     let eleTypes = map (elementSelector render res active) [minBound..maxBound]
-        save = button (rsSave res)
+        save = button res (rsSave res)
     in  backdrop (rsConcrete res) $ flow Vertical $ liftA2 (,) save (mconcat eleTypes)
 
 editIt :: (Platform p, Eq e, Enum e, Bounded e) =>
@@ -122,12 +129,12 @@ editIt renderElt res level0 GameInput { giAspect = aspect, giMouse = eMouse, giT
     let notInPanel = (\r pt -> not $ inside pt r) <$> panelRect
     (eDel0, eMouse') <- doubleClickGesture notInPanel eMouse time
     (eAdd0, _) <- clickGesture notInPanel eMouse'
-    let eAdd = snapshotWith (\pt (pos, me) ->
+    let eAdd = snapshot (\pt (pos, me) ->
                 case me of
                     Just e -> insertLevel (findElementClick pos pt) e
                     Nothing -> id
             ) eAdd0 (liftA2 (,) pos elementSel)
-    let eDel = snapshotWith (\pt pos ->
+    let eDel = snapshot (\pt pos ->
                  deleteLevel (findElementClick pos pt)
              ) eDel0 pos
     rec
@@ -142,7 +149,7 @@ editIt renderElt res level0 GameInput { giAspect = aspect, giMouse = eMouse, giT
               ],
             goEffects = barSnd
         },
-        snapshot eSave level
+        snapshot (flip const) eSave level
       )
   where
     everywhere = pure (const True)

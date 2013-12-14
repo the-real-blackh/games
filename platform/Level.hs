@@ -37,7 +37,11 @@ deleteLevel (x, y) le = le {
 
 -- | The size of a single terrain unit in Sodium2D co-ordinate space.
 levelScale :: Coord
-levelScale = 90
+levelScale = levelSpacing * 2
+
+-- | The size of a single terrain unit in Sodium2D co-ordinate space.
+levelSpacing :: Coord
+levelSpacing = 90
 
 placeElement :: Vector       -- ^ Scroll origin
              -> (Int, Int)   -- ^ Element co-ordinate
@@ -45,8 +49,8 @@ placeElement :: Vector       -- ^ Scroll origin
 placeElement (x0, y0) (x, y) =
     (
         (
-            x0 + ((fromIntegral x + 0.5) * levelScale),
-            y0 + ((fromIntegral y + 0.5) * levelScale)
+            x0 + (fromIntegral x * levelSpacing),
+            y0 + (fromIntegral y * levelSpacing)
         ),
         (levelScale*0.5, levelScale*0.5)
     )
@@ -57,7 +61,7 @@ findElementClick :: Vector     -- ^ Scroll origin
 findElementClick (x0, y0) (mx, my) =
     let x = mx - x0
         y = my - y0
-    in  (floor (x / levelScale), floor (y / levelScale))
+    in  (floor (x / levelScale - 0.5), floor (y / levelScale - 0.5))
 
 drawTerrain :: Platform p =>
                (e -> Drawable p) -> Vector -> IntMap [(Int, e)] -> Sprite p
