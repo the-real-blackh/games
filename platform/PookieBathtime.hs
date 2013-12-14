@@ -1,4 +1,5 @@
-module PookieBathtime (pookieBathtime) where
+{-# LANGUAGE RecursiveDo #-}
+module PookieBathtime {- (pookieBathtime) -} where
 
 import Page
 import qualified Level1
@@ -71,7 +72,7 @@ introPage :: Platform p =>
           -> Page p
 introPage res rng0 = Page $ \gi -> do
     t0 <- sample (giTime gi)
-    let eEnd = filterJust $ fmap (\t -> if t - t0 >= 3 then Just $ gamePage res levels rng0 else Nothing)
+    let eEnd = filterJust $ fmap (\t -> if t - t0 >= 0.5 then Just $ gamePage res levels rng0 else Nothing)
                    (updates $ giTime gi)
     return (
         def {
@@ -103,24 +104,25 @@ gamePage :: Platform p =>
 gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect = aspect } -> do
     t0 <- sample time
     x0 <- ((-800) *) <$> sample aspect
-    let xOrig = (\t -> x0 - (realToFrac (t - t0) * gameSpeed)) <$> time
-        yOrig = pure 0
-        orig = liftA2 (,) xOrig yOrig
-    ixRange <- removeDuplicates $ liftA2 (\aspect xOrig ->
-                let xExtent = 1000 * aspect + levelScale * 0.5
-                    minX = (-xOrig) - xExtent
-                    maxX = (-xOrig) + xExtent
-                    minIx = floor $ minX / levelSpacing
-                    maxIx = ceiling  $ maxX / levelSpacing
-                in  (minIx, maxIx)
-            ) aspect xOrig
-    let terr = (\(minIx, maxIx) -> -- trace ("range "++show minIx++" - "++show maxIx) $
-                let (_, terr') = IM.split (minIx-1) (leTerrain level0)
-                    (terr'', _) = IM.split (maxIx+1) terr'
-                in  terr''
-            ) <$> ixRange
-        levelSpr = liftA2 (drawTerrain (rsDrawElement res)) orig terr
-    plSpr <- player res aspect orig time never
+    rec
+        let xOrig = (\t -> x0 - (realToFrac (t - t0) * gameSpeed)) <$> time
+            yOrig = negate <$> yPos
+            orig = liftA2 (,) xOrig yOrig
+        ixRange <- removeDuplicates $ liftA2 (\aspect xOrig ->
+                    let xExtent = 1000 * aspect + levelScale * 0.5
+                        minX = (-xOrig) - xExtent
+                        maxX = (-xOrig) + xExtent
+                        minIx = floor $ minX / levelSpacing
+                        maxIx = ceiling  $ maxX / levelSpacing
+                    in  (minIx, maxIx)
+                ) aspect xOrig
+        let terr = (\(minIx, maxIx) -> -- trace ("range "++show minIx++" - "++show maxIx) $
+                    let (_, terr') = IM.split (minIx-1) (leTerrain level0)
+                        (terr'', _) = IM.split (maxIx+1) terr'
+                    in  terr''
+                ) <$> ixRange
+            levelSpr = liftA2 (drawTerrain (rsDrawElement res)) orig terr
+        (plSpr, yPos) <- player res aspect orig time never
     return (
         def {
             goSprite = mconcat <$> sequenceA [
@@ -132,24 +134,76 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
         never
       )
 
+solveLinear :: RealFloat a => (a,a) -> [a]
+solveLinear (0,b) = [] -- constant function has no roots
+solveLinear (a,b) = [-b/a]
+
+solveQuadratic :: RealFloat a => (a,a,a) -> [a]
+solveQuadratic (0,b,c) = solveLinear (b,c)
+solveQuadratic (a,b,c) =
+    let discr = b ^ 2 - 4 * a * c
+    in  if discr < 0
+            then []
+            else
+                let sqrtDiscr = sqrt discr
+                    twoa = 2 * a
+                    x1 = ((-b) - sqrtDiscr) / twoa
+                    x2 = ((-b) + sqrtDiscr) / twoa
+                in  [x1, x2]
+
+differential :: RealFloat a => (a, a, a) -> (a, a)
+differential (a,b,c) = (2*a,b)
+
+calculateQuadratic :: RealFloat a => (a,a,a) -> a -> a
+calculateQuadratic (a,b,c) x = a*x^2 + b*x + c
+
+-- | Add a constant to a quadratic
+offsetQuadratic :: RealFloat a => a -> (a,a,a) -> (a, a, a)
+offsetQuadratic c' (a, b, c) = (a, b, c + c')
+
+gravity :: Coord
+gravity = -1000
+
+-- | Return a list of collisions of points 
+intersections :: Float -> Float -> (Float, Float, Float) -> Float -> [(Float, (Int,Int))]
+intersections spacing radius q t =
+    case solveLinear (differential q) of
+        [tPeak] ->
+            let peak  = calculateQuadratic q (max t tPeak)
+                y0    = floor (peak / spacing)
+                line0 = (\yi -> fromIntegral yi * spacing) <$> [y0..]
+            in  trace ("lines="++show (take 10 line0)) $
+                []
+        _ -> trace ("!") []
+
 player :: Platform p =>
           Resources p
        -> Behavior Float           -- ^ Aspect ratio
        -> Behavior (Float, Float)  -- ^ Screen X position of game world origin
        -> Behavior Double
        -> Event ()            -- ^ Jump
-       -> Reactive (Behavior (Sprite p))
+       -> Reactive (Behavior (Sprite p), Behavior Coord)
 player res aspect orig time eJump = do
+    aspect0 <- sample aspect
     t0 <- sample time
+
+    signal0 <- hold (t0, (gravity, 0, 700)) never   -- ^ t0 and quadratic of current jump
+
+    let yPos = liftA2 (\(t0, q) t ->
+            seq (intersections levelSpacing (levelSpacing*2) q) $
+            trace ("blah") $
+            calculateQuadratic q (realToFrac $ t - t0)) signal0 time
+
     let character = flip fmap time $ \t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
             in  rsPlayer res ! ix
-        pos = liftA2 (\(xOrig, yOrig) aspect ->
-                (-xOrig - 800 * aspect, -yOrig)
-            ) orig aspect
-    return $ liftA3 (\draw orig pos ->
-        draw (orig `plus` pos,(levelScale,levelScale))
-      ) character orig pos
+        pos = liftA2 (\(xOrig, yOrig) yPos ->
+             (-xOrig - 800 * aspect0, yPos)
+          ) orig yPos
+        sprite = liftA3 (\draw orig pos ->
+            draw (orig `plus` pos,(levelScale,levelScale))
+          ) character orig pos
+    return (sprite, yPos)
   where
     nFrames = realToFrac . succ . snd . A.bounds . rsPlayer $ res
 
