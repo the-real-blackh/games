@@ -1,4 +1,4 @@
-{-# LANGUAGE RecursiveDo #-}
+{-# LANGUAGE RecursiveDo, TupleSections #-}
 module PookieBathtime {- (pookieBathtime) -} where
 
 import Page
@@ -18,7 +18,9 @@ import qualified Data.Array.IArray as A
 import Data.Array.IArray ((!))
 import Data.Default
 import qualified Data.IntMap as IM
+import Data.List
 import Data.Monoid
+import Data.Ord
 import Data.Traversable
 import Debug.Trace
 import System.Random
@@ -169,30 +171,48 @@ intersections :: Float -> Float -> (Float, Float, Float) -> Float -> [(Float, (I
 intersections spacing radius q t =
     case solveLinear (differential q) of
         [tPeak] ->
-            let peak  = calculateQuadratic q (max t tPeak)
-                y0    = floor (peak / spacing)
-                line0 = (\yi -> fromIntegral yi * spacing) <$> [y0..]
-            in  trace ("lines="++show (take 10 line0)) $
-                []
-        _ -> trace ("!") []
+            let startY = calculateQuadratic q (max t tPeak)
+                yi0    = floor ((startY + radius) / spacing)
+                line0  = (\yi -> fromIntegral yi * spacing) <$> [yi0,pred yi0..]
+                pts    = map (\y ->
+                        case solveQuadratic (offsetQuadratic (negate y) q) of
+                            [] -> [(y, tPeak)]
+                            ts -> map (y,) ts
+                    ) line0
+                (begin, end) = splitWhile (toSort t) pts
+                pts' = sortBy (comparing snd) (filter (keep t) $ concat begin) ++
+                       filter (keep t) (concat end)
+            in  trace ("t="++show t++" tPeak="++show tPeak++" lines="++show (take 10 pts')) []
+        _ -> trace "!" []
+  where
+    toSort _ [x] = True
+    toSort t xs = all (keep t) xs
+    keep t (_, tt) = tt >= t
+
+splitWhile :: (a -> Bool) -> [a] -> ([a], [a])
+splitWhile pred xs = go [] xs
+  where
+    go acc (x:xs) | pred x = go (x:acc) xs
+    go acc xs              = (reverse acc, xs)
 
 player :: Platform p =>
           Resources p
        -> Behavior Float           -- ^ Aspect ratio
        -> Behavior (Float, Float)  -- ^ Screen X position of game world origin
        -> Behavior Double
-       -> Event ()            -- ^ Jump
+       -> Event ()                 -- ^ Jump
        -> Reactive (Behavior (Sprite p), Behavior Coord)
 player res aspect orig time eJump = do
     aspect0 <- sample aspect
     t0 <- sample time
 
-    signal0 <- hold (t0, (gravity, 0, 700)) never   -- ^ t0 and quadratic of current jump
+    signal0 <- hold (t0, (gravity, 1000, 700)) never   -- ^ t0 and quadratic of current jump
 
     let yPos = liftA2 (\(t0, q) t ->
-            seq (intersections levelSpacing (levelSpacing*2) q) $
-            trace ("blah") $
-            calculateQuadratic q (realToFrac $ t - t0)) signal0 time
+            let dt = realToFrac (t - t0)
+            in  seq (intersections levelSpacing (levelSpacing*2) q dt) $
+                calculateQuadratic q dt
+          ) signal0 time
 
     let character = flip fmap time $ \t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
