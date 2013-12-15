@@ -2,9 +2,12 @@ module Level where
 
 import SimpleElement
 
+import Control.Applicative
+import Control.Monad
 import Data.Default
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IM
+import Data.List
 import Data.Maybe
 import Data.Monoid
 import FRP.Sodium.GameEngine2D.Geometry
@@ -15,6 +18,9 @@ data Level e = Level {
         leTerrain :: IntMap [(Int, e)]
     }
     deriving (Read, Show)
+
+lookupTerrain :: (Int, Int) -> IntMap [(Int, e)] -> Maybe e
+lookupTerrain (xi, yi) terr = join $ (xi `lookup`) <$> yi `IM.lookup` terr
 
 instance Enum e => Default (Level e) where
     def = Level $ IM.fromList [(0, [(0, toEnum 0)])]
@@ -41,7 +47,7 @@ levelScale = levelSpacing * 2
 
 -- | The size of a single terrain unit in Sodium2D co-ordinate space.
 levelSpacing :: Coord
-levelSpacing = 90
+levelSpacing = 100
 
 placeElement :: Vector       -- ^ Scroll origin
              -> (Int, Int)   -- ^ Element co-ordinate

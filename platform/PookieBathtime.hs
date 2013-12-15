@@ -19,6 +19,7 @@ import Data.Array.IArray ((!))
 import Data.Default
 import qualified Data.IntMap as IM
 import Data.List
+import Data.Maybe
 import Data.Monoid
 import Data.Ord
 import Data.Traversable
@@ -32,7 +33,8 @@ data Resources p = Resources {
         rsPlayButton   :: Drawable p,
         rsPlayer       :: Array Int (Drawable p),
         rsWomanWithDog :: Sprite p,
-        rsDrawElement  :: Element -> Drawable p
+        rsDrawElement  :: Element -> Drawable p,
+        rsRed          :: Drawable p
     }
 
 pookieBathtime :: Platform p => IO (GameInput p -> Reactive (GameOutput p))
@@ -49,6 +51,7 @@ loadResources = Resources
     )
     <*> backgroundImage "woman-with-dog.jpg"
     <*> loadElementResources
+    <*> image "red.png"
 
 titlePage :: Platform p =>
              Resources p
@@ -124,7 +127,7 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
                     in  terr''
                 ) <$> ixRange
             levelSpr = liftA2 (drawTerrain (rsDrawElement res)) orig terr
-        (plSpr, yPos) <- player res aspect orig time never
+        (plSpr, yPos) <- player res aspect xOrig yOrig time never
     return (
         def {
             goSprite = mconcat <$> sequenceA [
@@ -135,6 +138,33 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
         },
         never
       )
+
+closeTo :: (Ord a, Fractional a) => a -> a -> Bool
+closeTo a b = abs (a - b) < 0.000001
+
+interpolate :: RealFloat a => (a,a) -> (a,a) -> a -> a
+interpolate (t0, x0) (t1, x1) t =
+    if t0 `closeTo` t1
+        then (x0 + x1) * 0.5
+        else (t - t0) * (x1 - x0) / (t1 - t0) + x0
+
+foldlNeighbours :: (a -> b -> b -> a) -> a -> [b] -> a
+foldlNeighbours f start xs =
+    foldl' (\a -> uncurry (f a)) start $ zip (last xs:xs) xs
+
+-- | True if the specified point is inside the polygon (inclusive)
+insidePolygon :: RealFloat a => (a,a) -> [(a,a)] -> Bool
+-- Pathological case: Point on vertex - count as inside
+insidePolygon pt vertices | any (== pt) vertices = True
+-- Normal case - inside if odd number of intersections with ray
+insidePolygon (x, y) vertices = foldlNeighbours consider False vertices
+    where
+        consider maybeInside (x0, y0) (x1, y1) =
+            let betweenYs = y >= y0 && y < y1 ||
+                            y >= y1 && y < y0
+            in  if (betweenYs && x < interpolate (y0, x0) (y1, x1) y)
+                then not maybeInside
+                else maybeInside
 
 solveLinear :: RealFloat a => (a,a) -> [a]
 solveLinear (0,b) = [] -- constant function has no roots
@@ -159,6 +189,9 @@ differential (a,b,c) = (2*a,b)
 calculateQuadratic :: RealFloat a => (a,a,a) -> a -> a
 calculateQuadratic (a,b,c) x = a*x^2 + b*x + c
 
+calculateLinear :: RealFloat a => (a,a) -> a -> a
+calculateLinear (a,b) x = a*x + b
+
 -- | Add a constant to a quadratic
 offsetQuadratic :: RealFloat a => a -> (a,a,a) -> (a, a, a)
 offsetQuadratic c' (a, b, c) = (a, b, c + c')
@@ -166,28 +199,33 @@ offsetQuadratic c' (a, b, c) = (a, b, c + c')
 gravity :: Coord
 gravity = -1000
 
--- | Return a list of collisions of points 
-intersections :: Float -> Float -> (Float, Float, Float) -> Float -> [(Float, (Int,Int))]
-intersections spacing radius q t =
-    case solveLinear (differential q) of
-        [tPeak] ->
-            let startY = calculateQuadratic q (max t tPeak)
-                yi0    = floor ((startY + radius) / spacing)
-                line0  = (\yi -> fromIntegral yi * spacing) <$> [yi0,pred yi0..]
-                pts    = map (\y ->
-                        case solveQuadratic (offsetQuadratic (negate y) q) of
-                            [] -> [(y, tPeak)]
-                            ts -> map (y,) ts
-                    ) line0
-                (begin, end) = splitWhile (toSort t) pts
-                pts' = sortBy (comparing snd) (filter (keep t) $ concat begin) ++
-                       filter (keep t) (concat end)
-            in  trace ("t="++show t++" tPeak="++show tPeak++" lines="++show (take 10 pts')) []
-        _ -> trace "!" []
+-- | Return a list of collisions of points
+intersections :: Float -> Float -> (Float, (Float, Float, Float)) -> Float -> Float -> [((Int,Int),Point)]
+intersections spacing radius (x0, q) xa xb =
+    let (p0,p1) = wings xa
+        (p2,p3) = wings xb
+        poly = [p0,p2,p3,p1]
+        xs = map fst poly
+        ys = map snd poly
+        xi0 = floor (minimum xs / spacing) :: Int
+        xi1 = ceiling (maximum xs / spacing) :: Int
+        yi0 = floor (minimum ys / spacing) :: Int
+        yi1 = ceiling (maximum ys / spacing) :: Int
+        all_xyis = [(xi,yi) | xi <- [xi0..xi1], yi <- [yi0..yi1]]
+        matched_xyis = mapMaybe (\xyi@(xi,yi) ->
+            let xy = (fromIntegral xi * spacing, fromIntegral yi * spacing) 
+            in  if insidePolygon xy poly
+                        then Just (xyi, xy)
+                        else Nothing
+          ) all_xyis
+    in  matched_xyis
   where
-    toSort _ [x] = True
-    toSort t xs = all (keep t) xs
-    keep t (_, tt) = tt >= t
+    wings x =
+        let dx = x - x0
+            y = calculateQuadratic q dx
+            slope = calculateLinear (differential q) dx
+            (vx, vy) = radius `scale` normalize (slope, 1)
+        in  ((x0 + dx - vx, y + vy),(x0 + dx + vx, y - vy))
 
 splitWhile :: (a -> Bool) -> [a] -> ([a], [a])
 splitWhile pred xs = go [] xs
@@ -198,32 +236,39 @@ splitWhile pred xs = go [] xs
 player :: Platform p =>
           Resources p
        -> Behavior Float           -- ^ Aspect ratio
-       -> Behavior (Float, Float)  -- ^ Screen X position of game world origin
+       -> Behavior Float           -- ^ Screen X position of game world origin
+       -> Behavior Float           -- ^ Screen Y position of game world origin
        -> Behavior Double
        -> Event ()                 -- ^ Jump
        -> Reactive (Behavior (Sprite p), Behavior Coord)
-player res aspect orig time eJump = do
+player res aspect xOrig yOrig time eJump = do
     aspect0 <- sample aspect
+    let xPos = (\xOrig -> -xOrig - 800 * aspect0) <$> xOrig
+    x0 <- sample xPos
     t0 <- sample time
 
-    signal0 <- hold (t0, (gravity, 1000, 700)) never   -- ^ t0 and quadratic of current jump
+    signal0 <- hold (x0, (gravity/gameSpeed^2, 1000/gameSpeed, 700)) never   -- ^ t0 and quadratic of current jump
 
-    let yPos = liftA2 (\(t0, q) t ->
-            let dt = realToFrac (t - t0)
-            in  seq (intersections levelSpacing (levelSpacing*2) q dt) $
-                calculateQuadratic q dt
-          ) signal0 time
+    let collisions = snapshot (\xPos' (xPos, x0q) ->
+              intersections levelSpacing levelSpacing x0q xPos xPos'
+          ) (updates xPos) ((,) <$> xPos <*> signal0)
+    collisionPoses <- accum mempty $ ((<>) . snd) <$> collisions
+    let collisionSprs = liftA3 (\xys xOrig yOrig ->
+              mconcat $ map (rsRed res . (,(levelSpacing,levelSpacing)) . plus (xOrig, yOrig)) xys
+          ) collisionPoses xOrig yOrig
 
-    let character = flip fmap time $ \t ->
+    let yPos = liftA2 (\(x0, q) x ->
+            let dx = realToFrac (x - x0)
+            in  calculateQuadratic q dx
+          ) signal0 xPos
+        character = (\t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
             in  rsPlayer res ! ix
-        pos = liftA2 (\(xOrig, yOrig) yPos ->
-             (-xOrig - 800 * aspect0, yPos)
-          ) orig yPos
-        sprite = liftA3 (\draw orig pos ->
-            draw (orig `plus` pos,(levelScale,levelScale))
-          ) character orig pos
-    return (sprite, yPos)
+          ) <$> time
+        sprite = (\draw xOrig yOrig xPos yPos ->
+            draw ((xOrig, yOrig) `plus` (xPos, yPos),(levelScale,levelScale))
+          ) <$> character <*> xOrig <*> yOrig <*> xPos <*> yPos
+    return (liftA2 mappend collisionSprs sprite, yPos)
   where
     nFrames = realToFrac . succ . snd . A.bounds . rsPlayer $ res
 
