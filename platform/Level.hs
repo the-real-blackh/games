@@ -20,7 +20,7 @@ data Level e = Level {
     deriving (Read, Show)
 
 lookupTerrain :: (Int, Int) -> IntMap [(Int, e)] -> Maybe e
-lookupTerrain (xi, yi) terr = join $ (xi `lookup`) <$> yi `IM.lookup` terr
+lookupTerrain (xi, yi) terr = join $ (yi `lookup`) <$> xi `IM.lookup` terr
 
 instance Enum e => Default (Level e) where
     def = Level $ IM.fromList [(0, [(0, toEnum 0)])]

@@ -106,9 +106,14 @@ gamePage :: Platform p =>
          -> [Level Element]
          -> StdGen
          -> Page p
-gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect = aspect } -> do
+gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect = aspect, giMouse = eMouse } -> do
     t0 <- sample time
     x0 <- ((-800) *) <$> sample aspect
+    let eJump = filterJust $ (\me ->
+               case me of
+                   MouseDown _ _ -> Just ()
+                   _             -> Nothing
+           ) <$> eMouse
     rec
         let xOrig = (\t -> x0 - (realToFrac (t - t0) * gameSpeed)) <$> time
             yOrig = negate <$> yPos
@@ -127,7 +132,7 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
                     in  terr''
                 ) <$> ixRange
             levelSpr = liftA2 (drawTerrain (rsDrawElement res)) orig terr
-        (plSpr, yPos) <- player res aspect xOrig yOrig time never
+        (plSpr, yPos) <- player res aspect level0 xOrig yOrig time eJump
     return (
         def {
             goSprite = mconcat <$> sequenceA [
@@ -199,9 +204,11 @@ offsetQuadratic c' (a, b, c) = (a, b, c + c')
 gravity :: Coord
 gravity = -1000
 
--- | Return a list of collisions of points
-intersections :: Float -> Float -> (Float, (Float, Float, Float)) -> Float -> Float -> [((Int,Int),Point)]
-intersections spacing radius (x0, q) xa xb =
+data Direction = Asc | Desc deriving (Eq, Ord, Show)
+
+-- | Return a list of collisions of points, in the order in which we hit them
+intersections :: Float -> Float -> Signal  -> Float -> Float -> [((Int,Int),Point,Direction)]
+intersections spacing radius (Signal x0 q) xa xb =
     let (p0,p1) = wings xa
         (p2,p3) = wings xb
         poly = [p0,p2,p3,p1]
@@ -213,19 +220,28 @@ intersections spacing radius (x0, q) xa xb =
         yi1 = ceiling (maximum ys / spacing) :: Int
         all_xyis = [(xi,yi) | xi <- [xi0..xi1], yi <- [yi0..yi1]]
         matched_xyis = mapMaybe (\xyi@(xi,yi) ->
-            let xy = (fromIntegral xi * spacing, fromIntegral yi * spacing) 
+            let x = fromIntegral xi * spacing
+                y = fromIntegral yi * spacing
+                dir = if calculateLinear dq (x - x0) > 0 then Asc else Desc
+                xy = (x,y)
             in  if insidePolygon xy poly
-                        then Just (xyi, xy)
+                        then Just (xyi, xy, dir)
                         else Nothing
           ) all_xyis
-    in  matched_xyis
+        pts = sortBy compareResult matched_xyis
+    in {-trace ("pts="++show (map (\(i, _, d) -> (i,d)) pts))-} pts
   where
+    dq = differential q
     wings x =
         let dx = x - x0
             y = calculateQuadratic q dx
-            slope = calculateLinear (differential q) dx
+            slope = calculateLinear dq dx
             (vx, vy) = radius `scale` normalize (slope, 1)
         in  ((x0 + dx - vx, y + vy),(x0 + dx + vx, y - vy))
+    compareResult p0 p1 = compare (trans p0) (trans p1)
+      where
+        trans ((_,yi),_,Asc)  = (Asc, yi)     -- sort by yi when ascending
+        trans ((_,yi),_,Desc) = (Desc, -yi)   -- and by -yi when descending
 
 splitWhile :: (a -> Bool) -> [a] -> ([a], [a])
 splitWhile pred xs = go [] xs
@@ -233,42 +249,70 @@ splitWhile pred xs = go [] xs
     go acc (x:xs) | pred x = go (x:acc) xs
     go acc xs              = (reverse acc, xs)
 
+data Signal = Signal {
+        siX0   :: Float,
+        siQuad :: (Float, Float, Float)
+    }
+
+collide :: (Int, Int) -> Element -> Direction -> Maybe (Signal -> Signal)
+collide xyi (Platform _) Desc = Just $ \_ -> Signal 0 (0,0,0)
+collide _ _ _ = Nothing
+
 player :: Platform p =>
           Resources p
        -> Behavior Float           -- ^ Aspect ratio
+       -> Level Element            -- ^ The current level
        -> Behavior Float           -- ^ Screen X position of game world origin
        -> Behavior Float           -- ^ Screen Y position of game world origin
        -> Behavior Double
        -> Event ()                 -- ^ Jump
        -> Reactive (Behavior (Sprite p), Behavior Coord)
-player res aspect xOrig yOrig time eJump = do
+player res aspect level xOrig yOrig time eJump = do
     aspect0 <- sample aspect
-    let xPos = (\xOrig -> -xOrig - 800 * aspect0) <$> xOrig
+    let xPos = (\xOrig -> -xOrig - 650 * aspect0) <$> xOrig
     x0 <- sample xPos
     t0 <- sample time
 
-    signal0 <- hold (x0, (gravity/gameSpeed^2, 1000/gameSpeed, 700)) never   -- ^ t0 and quadratic of current jump
+    rec
+        let eLeap = snapshot (\() (x,y) _ ->
+                Signal x (gravity/gameSpeed^2, 1500/gameSpeed, y) 
+              ) eJump (liftA2 (,) xPos yPos)
 
-    let collisions = snapshot (\xPos' (xPos, x0q) ->
-              intersections levelSpacing levelSpacing x0q xPos xPos'
-          ) (updates xPos) ((,) <$> xPos <*> signal0)
-    collisionPoses <- accum mempty $ ((<>) . snd) <$> collisions
-    let collisionSprs = liftA3 (\xys xOrig yOrig ->
-              mconcat $ map (rsRed res . (,(levelSpacing,levelSpacing)) . plus (xOrig, yOrig)) xys
-          ) collisionPoses xOrig yOrig
+        signal0 <- accum (Signal x0 (gravity/gameSpeed^2, 0, 700)) (eAlight <> eLeap)
 
-    let yPos = liftA2 (\(x0, q) x ->
-            let dx = realToFrac (x - x0)
-            in  calculateQuadratic q dx
-          ) signal0 xPos
-        character = (\t ->
+        let collisions = snapshot (\xPos' (xPos, sig) ->
+                  intersections levelSpacing levelSpacing sig xPos xPos'
+              ) (updates xPos) ((,) <$> xPos <*> signal0)
+
+            eAlight = filterJust $ (\collisions ->
+                  let hits = mapMaybe (\(xyi, xy, dir) ->
+                              case xyi `lookupTerrain` leTerrain level of
+                                  Just elt -> {-trace (show (xyi,elt,dir)) $ -} Just $ collide xyi elt dir
+                                  _        -> Nothing
+                          ) collisions
+                      alight = listToMaybe $ catMaybes hits
+                  in  alight
+              ) <$> collisions
+
+        {-
+        collisionPoses <- accum mempty $ ((<>) . map (\(_,pt,_) -> pt)) <$> collisions
+        let collisionSprs = liftA3 (\xys xOrig yOrig ->
+                  mconcat $ map (rsRed res . (,(levelSpacing,levelSpacing)) . plus (xOrig, yOrig)) xys
+              ) collisionPoses xOrig yOrig
+              -}
+    
+        let yPos = liftA2 (\(Signal x0 q) x ->
+                let dx = realToFrac (x - x0)
+                in  calculateQuadratic q dx
+              ) signal0 xPos
+    let character = (\t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
             in  rsPlayer res ! ix
           ) <$> time
         sprite = (\draw xOrig yOrig xPos yPos ->
             draw ((xOrig, yOrig) `plus` (xPos, yPos),(levelScale,levelScale))
           ) <$> character <*> xOrig <*> yOrig <*> xPos <*> yPos
-    return (liftA2 mappend collisionSprs sprite, yPos)
+    return ({-liftA2 mappend collisionSprs-} sprite, yPos)
   where
     nFrames = realToFrac . succ . snd . A.bounds . rsPlayer $ res
 
