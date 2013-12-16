@@ -255,8 +255,16 @@ data Signal = Signal {
     }
 
 collide :: (Int, Int) -> Element -> Direction -> Maybe (Signal -> Signal)
-collide xyi (Platform _) Desc = Just $ \_ -> Signal 0 (0,0,0)
+collide (xi, yi) (Platform _) Desc = Just $ \sig0@(Signal x0 q) ->
+    let y = realToFrac yi * levelSpacing
+        dq = differential q
+    in  case listToMaybe $ filter (\dx -> calculateLinear dq dx < 0) $ solveQuadratic ((-y) `offsetQuadratic` q) of
+            Just dx -> Signal (dx + x0) (0,0,calculateQuadratic q dx)
+            Nothing -> sig0
 collide _ _ _ = Nothing
+
+calculateSignal :: Signal -> Float -> Float
+calculateSignal (Signal x0 q) x = calculateQuadratic q (realToFrac (x - x0))
 
 player :: Platform p =>
           Resources p
@@ -285,9 +293,9 @@ player res aspect level xOrig yOrig time eJump = do
               ) (updates xPos) ((,) <$> xPos <*> signal0)
 
             eAlight = filterJust $ (\collisions ->
-                  let hits = mapMaybe (\(xyi, xy, dir) ->
-                              case xyi `lookupTerrain` leTerrain level of
-                                  Just elt -> {-trace (show (xyi,elt,dir)) $ -} Just $ collide xyi elt dir
+                  let hits = mapMaybe (\((xi,yi), xy, dir) ->
+                              case (xi,yi-1) `lookupTerrain` leTerrain level of
+                                  Just elt -> {-trace (show (xyi,elt,dir)) $ -} Just $ collide (xi,yi) elt dir
                                   _        -> Nothing
                           ) collisions
                       alight = listToMaybe $ catMaybes hits
@@ -301,10 +309,7 @@ player res aspect level xOrig yOrig time eJump = do
               ) collisionPoses xOrig yOrig
               -}
     
-        let yPos = liftA2 (\(Signal x0 q) x ->
-                let dx = realToFrac (x - x0)
-                in  calculateQuadratic q dx
-              ) signal0 xPos
+        let yPos = liftA2 calculateSignal signal0 xPos
     let character = (\t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
             in  rsPlayer res ! ix
