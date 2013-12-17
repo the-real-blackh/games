@@ -37,6 +37,8 @@ data Resources p = Resources {
         rsRed          :: Drawable p
     }
 
+toHold :: 
+
 pookieBathtime :: Platform p => IO (GameInput p -> Reactive (GameOutput p))
 pookieBathtime = game <$> loadResources <*> newStdGen
 
@@ -254,14 +256,15 @@ data Signal = Signal {
         siQuad :: (Float, Float, Float)
     }
 
-collide :: (Int, Int) -> Element -> Direction -> Maybe (Signal -> Signal)
-collide (xi, yi) (Platform _) Desc = Just $ \sig0@(Signal x0 q) ->
+-- | Logic for alighting on a platform
+alight :: (Int, Int) -> Element -> Direction -> Maybe (Signal -> Signal)
+alight (xi, yi) (Platform _) Desc = Just $ \sig0@(Signal x0 q) ->
     let y = realToFrac yi * levelSpacing
         dq = differential q
     in  case listToMaybe $ filter (\dx -> calculateLinear dq dx < 0) $ solveQuadratic ((-y) `offsetQuadratic` q) of
             Just dx -> Signal (dx + x0) (0,0,calculateQuadratic q dx)
             Nothing -> sig0
-collide _ _ _ = Nothing
+alight _ _ _ = Nothing
 
 calculateSignal :: Signal -> Float -> Float
 calculateSignal (Signal x0 q) x = calculateQuadratic q (realToFrac (x - x0))
@@ -282,34 +285,37 @@ player res aspect level xOrig yOrig time eJump = do
     t0 <- sample time
 
     rec
-        let eLeap = snapshot (\() (x,y) _ ->
-                Signal x (gravity/gameSpeed^2, 1500/gameSpeed, y) 
-              ) eJump (liftA2 (,) xPos yPos)
+        let pos = liftA2 (,) xPos yPos
+            eLeap = snapshot (\() (x,y) sig@(Signal _ (g,_,_)) ->
+                -- Can only jump if we are standing on something
+                if g == 0
+                    then Signal x (gravity/gameSpeed^2, 1500/gameSpeed, y)
+                    else sig
+              ) eJump pos
 
         signal0 <- accum (Signal x0 (gravity/gameSpeed^2, 0, 700)) (eAlight <> eLeap)
 
-        let collisions = snapshot (\xPos' (xPos, sig) ->
-                  intersections levelSpacing levelSpacing sig xPos xPos'
+        let collisionRadius = levelSpacing * 0.5
+            collisions = snapshot (\xPos' (xPos, sig) ->
+                  intersections levelSpacing collisionRadius sig xPos xPos'
               ) (updates xPos) ((,) <$> xPos <*> signal0)
-
             eAlight = filterJust $ (\collisions ->
                   let hits = mapMaybe (\((xi,yi), xy, dir) ->
                               case (xi,yi-1) `lookupTerrain` leTerrain level of
-                                  Just elt -> {-trace (show (xyi,elt,dir)) $ -} Just $ collide (xi,yi) elt dir
+                                  Just elt -> Just $ alight (xi,yi) elt dir
                                   _        -> Nothing
                           ) collisions
-                      alight = listToMaybe $ catMaybes hits
-                  in  alight
+                  in  listToMaybe $ catMaybes hits
               ) <$> collisions
+            yPos = liftA2 calculateSignal signal0 xPos
 
-        {-
-        collisionPoses <- accum mempty $ ((<>) . map (\(_,pt,_) -> pt)) <$> collisions
-        let collisionSprs = liftA3 (\xys xOrig yOrig ->
-                  mconcat $ map (rsRed res . (,(levelSpacing,levelSpacing)) . plus (xOrig, yOrig)) xys
-              ) collisionPoses xOrig yOrig
-              -}
-    
-        let yPos = liftA2 calculateSignal signal0 xPos
+            belowMe = (\(x, y) ->
+                let yi = round (y / levelSpacing) - 1
+                    xi0 = round ((x - collisionRadius) / levelSpacing)
+                    xi1 = round ((x + collisionRadius) / levelSpacing)
+                in  map (,yi) [xi0..xi1]
+              ) <$> pos :: Behavior [(Int,Int)]
+
     let character = (\t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
             in  rsPlayer res ! ix
@@ -317,7 +323,20 @@ player res aspect level xOrig yOrig time eJump = do
         sprite = (\draw xOrig yOrig xPos yPos ->
             draw ((xOrig, yOrig) `plus` (xPos, yPos),(levelScale,levelScale))
           ) <$> character <*> xOrig <*> yOrig <*> xPos <*> yPos
-    return ({-liftA2 mappend collisionSprs-} sprite, yPos)
+
+    collisionPoses <- accum mempty $ ((<>) . map (\(pt,_,_) -> pt)) <$> collisions
+    let toXY (xi,yi) = (fromIntegral xi * levelSpacing, fromIntegral yi * levelSpacing)
+        collisionSprs = liftA3 (\xys xOrig yOrig ->
+              mconcat $ map (rsRed res . (,(levelSpacing*0.5,levelSpacing*0.5)) . plus (xOrig, yOrig)
+                  . toXY) xys
+          ) belowMe xOrig yOrig
+    return (
+        mconcat <$> sequenceA [
+            sprite,
+            collisionSprs
+        ],
+        yPos
+      )
   where
     nFrames = realToFrac . succ . snd . A.bounds . rsPlayer $ res
 
