@@ -13,6 +13,7 @@ import FRP.Sodium.GameEngine2D.Platform
 
 import Control.Applicative
 import Control.Arrow (first)
+import Control.Monad
 import Data.Array (Array)
 import qualified Data.Array.IArray as A
 import Data.Array.IArray ((!))
@@ -22,7 +23,7 @@ import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Ord
-import Data.Traversable
+import Data.Traversable (sequenceA)
 import Debug.Trace
 import System.Random
 
@@ -37,7 +38,19 @@ data Resources p = Resources {
         rsRed          :: Drawable p
     }
 
-toHold :: 
+invisibleResources :: Platform p =>
+                      Resources p -> Sprite p
+invisibleResources (Resources {
+        rsGameBG = bg,
+        rsPlayer = player,
+        rsDrawElement = drawElt
+    }) =
+    mconcat $
+    map invisible $
+    [bg] ++ map ($ r0) (A.elems player) ++ map (\e -> drawElt e r0) [minBound..maxBound]  
+  where
+    r0 = ((0,0),(0,0))
+    
 
 pookieBathtime :: Platform p => IO (GameInput p -> Reactive (GameOutput p))
 pookieBathtime = game <$> loadResources <*> newStdGen
@@ -83,7 +96,7 @@ introPage res rng0 = Page $ \gi -> do
                    (updates $ giTime gi)
     return (
         def {
-            goSprite = pure $ rsWomanWithDog res
+            goSprite = pure $ invisibleResources res `mappend` rsWomanWithDog res
         },
         eEnd
       )
@@ -93,7 +106,7 @@ introPage res rng0 = Page $ \gi -> do
       ]
 
 gameSpeed :: Float
-gameSpeed = 400
+gameSpeed = 1200
 
 removeDuplicates :: Eq a => Behavior a -> Reactive (Behavior a)
 removeDuplicates ba = do
@@ -135,15 +148,21 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
                 ) <$> ixRange
             levelSpr = liftA2 (drawTerrain (rsDrawElement res)) orig terr
         (plSpr, yPos) <- player res aspect level0 xOrig yOrig time eJump
+    let eDie = filterJust $ (
+                \y -> if y < (-15) * levelScale
+                    then Just $ titlePage res rng0
+                    else Nothing
+            ) <$> updates yPos
     return (
         def {
-            goSprite = mconcat <$> sequenceA [
+            goSprite =
+              (invisibleResources res `mappend`) . mconcat <$> sequenceA [
                 pure $ rsGameBG res,
                 levelSpr,
                 plSpr
               ]
         },
-        never
+        eDie
       )
 
 closeTo :: (Ord a, Fractional a) => a -> a -> Bool
@@ -204,7 +223,7 @@ offsetQuadratic :: RealFloat a => a -> (a,a,a) -> (a, a, a)
 offsetQuadratic c' (a, b, c) = (a, b, c + c')
 
 gravity :: Coord
-gravity = -1000
+gravity = -2000
 
 data Direction = Asc | Desc deriving (Eq, Ord, Show)
 
@@ -255,10 +274,15 @@ data Signal = Signal {
         siX0   :: Float,
         siQuad :: (Float, Float, Float)
     }
+    deriving Show
+
+canStandOn :: Element -> Bool
+canStandOn (Platform _) = True
+canStandOn _ = False
 
 -- | Logic for alighting on a platform
 alight :: (Int, Int) -> Element -> Direction -> Maybe (Signal -> Signal)
-alight (xi, yi) (Platform _) Desc = Just $ \sig0@(Signal x0 q) ->
+alight (xi, yi) elt Desc | canStandOn elt = Just $ \sig0@(Signal x0 q) ->
     let y = realToFrac yi * levelSpacing
         dq = differential q
     in  case listToMaybe $ filter (\dx -> calculateLinear dq dx < 0) $ solveQuadratic ((-y) `offsetQuadratic` q) of
@@ -268,6 +292,31 @@ alight _ _ _ = Nothing
 
 calculateSignal :: Signal -> Float -> Float
 calculateSignal (Signal x0 q) x = calculateQuadratic q (realToFrac (x - x0))
+
+xiRanges :: Float -> Float -> Float -> Float -> [(Float, (Int, Int))]
+xiRanges spacing radius_0 x0_0 x1_0 =
+    map (first (\xa -> (xa - 0.5) * spacing)) $
+    takeWhile (\(xa, _) -> xa < x1) $
+    dropWhile (\(xa, _) -> xa < x0) $
+    map (first (+radius)) $
+    iterate {- 2 (bumpb . snd . snd) -} (bumpa . fst . snd) $
+    bumpa (floor $ x0 - radius)
+  where
+    radius = radius_0 / spacing
+    x0 = (x0_0 + 0.5) / spacing
+    x1 = (x1_0 + 0.5) / spacing
+    bumpa xa = let xa' = fromIntegral (xa + 1 :: Int)
+                   xb' = xa' + radius*2
+               in  (xa', (floor xa', floor xb'))
+    bumpb xb = let xb' = fromIntegral (xb + 1 :: Int)
+                   xa' = xb' - radius*2
+               in  (xa', (floor xa', floor xb'))
+    iterate2 fa fb i =
+        let i' = fa i
+        in  i : i' : iterate2 fa fb (fb i')
+
+standing :: Signal -> Bool
+standing (Signal _ (g,_,_)) = g == 0
 
 player :: Platform p =>
           Resources p
@@ -286,19 +335,19 @@ player res aspect level xOrig yOrig time eJump = do
 
     rec
         let pos = liftA2 (,) xPos yPos
-            eLeap = snapshot (\() (x,y) sig@(Signal _ (g,_,_)) ->
+            eLeap = snapshot (\() (x,y) signal ->
                 -- Can only jump if we are standing on something
-                if g == 0
-                    then Signal x (gravity/gameSpeed^2, 1500/gameSpeed, y)
-                    else sig
+                if standing signal
+                    then Signal x (gravity/gameSpeed^2, 2500/gameSpeed, y)
+                    else signal
               ) eJump pos
 
-        signal0 <- accum (Signal x0 (gravity/gameSpeed^2, 0, 700)) (eAlight <> eLeap)
+        signal <- accum (Signal x0 (gravity/gameSpeed^2, 0, levelSpacing * 3)) (eAlight <> eLeap <> eFall)
 
-        let collisionRadius = levelSpacing * 0.5
+        let collisionRadius = levelSpacing * 0.7
             collisions = snapshot (\xPos' (xPos, sig) ->
                   intersections levelSpacing collisionRadius sig xPos xPos'
-              ) (updates xPos) ((,) <$> xPos <*> signal0)
+              ) (updates xPos) ((,) <$> xPos <*> signal)
             eAlight = filterJust $ (\collisions ->
                   let hits = mapMaybe (\((xi,yi), xy, dir) ->
                               case (xi,yi-1) `lookupTerrain` leTerrain level of
@@ -307,14 +356,20 @@ player res aspect level xOrig yOrig time eJump = do
                           ) collisions
                   in  listToMaybe $ catMaybes hits
               ) <$> collisions
-            yPos = liftA2 calculateSignal signal0 xPos
+            yPos = liftA2 calculateSignal signal xPos
 
-            belowMe = (\(x, y) ->
-                let yi = round (y / levelSpacing) - 1
-                    xi0 = round ((x - collisionRadius) / levelSpacing)
-                    xi1 = round ((x + collisionRadius) / levelSpacing)
-                in  map (,yi) [xi0..xi1]
-              ) <$> pos :: Behavior [(Int,Int)]
+            eFall = filterJust $ snapshot (\xPos' (xPos, yPos, signal) ->
+                  if standing signal then
+                      let rnges = xiRanges levelSpacing collisionRadius xPos xPos'
+                          yi = round (yPos / levelSpacing) - 1
+                          poses = map (\(xa, (xi0, xi1)) -> (xa, (,yi) <$> [xi0..xi1])) rnges
+                      in  foldl' mplus Nothing $ map (\(xa, pts) ->
+                                  if any (maybe False canStandOn . (`lookupTerrain` leTerrain level)) pts
+                                      then Nothing
+                                      else Just $ \_ -> Signal xa (gravity/gameSpeed^2, 0, yPos)
+                              ) poses
+                  else Nothing
+              ) (updates xPos) (liftA3 (,,) xPos yPos signal)
 
     let character = (\t ->
             let ix = floor $ nFrames * snd (properFraction (2 * (t - t0)))
@@ -324,17 +379,17 @@ player res aspect level xOrig yOrig time eJump = do
             draw ((xOrig, yOrig) `plus` (xPos, yPos),(levelScale,levelScale))
           ) <$> character <*> xOrig <*> yOrig <*> xPos <*> yPos
 
+    {-
     collisionPoses <- accum mempty $ ((<>) . map (\(pt,_,_) -> pt)) <$> collisions
     let toXY (xi,yi) = (fromIntegral xi * levelSpacing, fromIntegral yi * levelSpacing)
         collisionSprs = liftA3 (\xys xOrig yOrig ->
               mconcat $ map (rsRed res . (,(levelSpacing*0.5,levelSpacing*0.5)) . plus (xOrig, yOrig)
                   . toXY) xys
-          ) belowMe xOrig yOrig
+          ) collisionPoses xOrig yOrig
+          -}
+
     return (
-        mconcat <$> sequenceA [
-            sprite,
-            collisionSprs
-        ],
+        (invisibleResources res `mappend`) <$> sprite,
         yPos
       )
   where

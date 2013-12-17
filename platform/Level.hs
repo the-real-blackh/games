@@ -47,7 +47,7 @@ levelScale = levelSpacing * 2
 
 -- | The size of a single terrain unit in Sodium2D co-ordinate space.
 levelSpacing :: Coord
-levelSpacing = 100
+levelSpacing = 200
 
 placeElement :: Vector       -- ^ Scroll origin
              -> (Int, Int)   -- ^ Element co-ordinate
@@ -67,7 +67,7 @@ findElementClick :: Vector     -- ^ Scroll origin
 findElementClick (x0, y0) (mx, my) =
     let x = mx - x0
         y = my - y0
-    in  (floor (x / levelScale - 0.5), floor (y / levelScale - 0.5))
+    in  (round (x / levelSpacing), round (y / levelSpacing))
 
 drawTerrain :: Platform p =>
                (e -> Drawable p) -> Vector -> IntMap [(Int, e)] -> Sprite p
