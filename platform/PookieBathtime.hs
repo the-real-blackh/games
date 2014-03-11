@@ -38,15 +38,14 @@ data Resources p = Resources {
         rsRed          :: Drawable p
     }
 
-invisibleResources :: Platform p =>
-                      Resources p -> Sprite p
-invisibleResources (Resources {
+allResources :: Platform p =>
+                Resources p -> Sprite p
+allResources (Resources {
         rsGameBG = bg,
         rsPlayer = player,
         rsDrawElement = drawElt
     }) =
     mconcat $
-    map invisible $
     [bg] ++ map ($ r0) (A.elems player) ++ map (\e -> drawElt e r0) [minBound..maxBound]  
   where
     r0 = ((0,0),(0,0))
@@ -76,7 +75,8 @@ titlePage res rng0 = Page $ \gi -> do
     (eClick, held) <- clickGesture (pure (`inside` buttonRectUp)) (giMouse gi)
     return (
         def {
-            goSprite = (rsPookieTitle res <>) . mconcat <$> sequenceA [
+            goSprite =
+               ((invisible (allResources res <> rsWomanWithDog res)) <>) . (rsPookieTitle res <>) . mconcat <$> sequenceA [
                    (\held -> rsPlayButton res (if held then buttonRectDown else buttonRectUp)) <$> held
                ]
         },
@@ -92,11 +92,11 @@ introPage :: Platform p =>
           -> Page p
 introPage res rng0 = Page $ \gi -> do
     t0 <- sample (giTime gi)
-    let eEnd = filterJust $ fmap (\t -> if t - t0 >= 0.5 then Just $ gamePage res levels rng0 else Nothing)
+    let eEnd = filterJust $ fmap (\t -> if t - t0 >= 1.5 then Just $ gamePage res levels rng0 else Nothing)
                    (updates $ giTime gi)
     return (
         def {
-            goSprite = pure $ invisibleResources res `mappend` rsWomanWithDog res
+            goSprite = pure $ invisible (allResources res) <> rsWomanWithDog res
         },
         eEnd
       )
@@ -156,7 +156,7 @@ gamePage res (level0:levels0) rng0 = Page $ \GameInput { giTime = time, giAspect
     return (
         def {
             goSprite =
-              (invisibleResources res `mappend`) . mconcat <$> sequenceA [
+              (invisible (allResources res) <>) . mconcat <$> sequenceA [
                 pure $ rsGameBG res,
                 levelSpr,
                 plSpr
@@ -389,7 +389,7 @@ player res aspect level xOrig yOrig time eJump = do
           -}
 
     return (
-        (invisibleResources res `mappend`) <$> sprite,
+        sprite,
         yPos
       )
   where
